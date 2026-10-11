@@ -49,13 +49,23 @@ def fetch_bulk(session, raw, force):
             return zpath
         except zipfile.BadZipFile:
             pass
-    print(f"downloading {BULK_URL}")
+    # The server does not support Range requests and sometimes truncates the
+    # transfer, so retry the whole download until the archive validates.
     tmp = zpath + ".part"
-    with get(session, BULK_URL, stream=True) as r, open(tmp, "wb") as f:
-        for chunk in r.iter_content(1 << 20):
-            f.write(chunk)
-    os.replace(tmp, zpath)
-    return zpath
+    for attempt in range(5):
+        print(f"downloading {BULK_URL} (attempt {attempt + 1})")
+        try:
+            with get(session, BULK_URL, stream=True) as r, open(tmp, "wb") as f:
+                for chunk in r.iter_content(1 << 20):
+                    f.write(chunk)
+            with zipfile.ZipFile(tmp) as z:
+                if z.testzip() is None:
+                    os.replace(tmp, zpath)
+                    return zpath
+        except (requests.RequestException, zipfile.BadZipFile, OSError) as e:
+            print(f"  download failed: {e}", file=sys.stderr)
+        time.sleep(30 * (attempt + 1))
+    raise RuntimeError("bulk download failed")
 
 
 def fetch_list(session, raw, force):
